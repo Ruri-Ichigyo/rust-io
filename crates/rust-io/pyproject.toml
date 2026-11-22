@@ -1,0 +1,29 @@
+[build-system]
+requires = ["maturin>=1.13,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rust-io"
+requires-python = ">=3.12"
+description = "High-performance Rust native extensions: generic async I/O (local/HTTP/S3), literature search, MinerU parsing, archives, and SHA-256 dedup."
+readme = "README.md"
+license = "Apache-2.0"
+authors = [
+    { name = "Lingua Seeker Team" },
+]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+]
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/Ruri-Ichigyo/rust-io"
+Repository = "https://github.com/Ruri-Ichigyo/rust-io"
+[tool.maturin]
+features = ["pyo3/extension-module"]

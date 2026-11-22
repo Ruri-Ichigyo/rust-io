@@ -1,0 +1,24 @@
+[package]
+name = "files-io"
+version = "0.1.0"
+edition = "2024"
+description = "Unified local + S3 file I/O for Python"
+
+[lib]
+name = "files_io"
+crate-type = ["rlib"]
+
+[dependencies]
+pyo3 = { version = "0.30" }
+pyo3-async-runtimes = { version = "0.30", features = ["tokio-runtime"] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
+aws-sdk-s3 = { version = "1", default-features = false, features = ["default-https-client", "rt-tokio", "http-1x"] }
+aws-config = "1"
+aws-credential-types = "1"
+zip = "9"
+tar = "0.4"
+flate2 = "1"
+sha2 = "0.10"
+hex = "0.4"
+rayon = "1"
+thiserror = "2"

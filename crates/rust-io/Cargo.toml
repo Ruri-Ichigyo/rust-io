@@ -1,0 +1,15 @@
+[package]
+name = "rust-io"
+version = "0.3.0"
+edition = "2024"
+description = "High-performance async I/O native extensions for Python"
+
+[lib]
+name = "rust_io"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = "0.30"
+files-io = { path = "../files-io" }
+io-py = { path = "../io-py" }
+net-io = { path = "../net-io" }
