@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# rust-anything: the Rust-native optimization gauntlet for this workspace.
+# Every step fails closed; a skipped or crashing checker is a failure.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
+
+step() {
+  printf '\n==> %s\n' "$*"
+  "$@"
+}
+
+run_all() {
+  step cargo fmt --all -- --check
+  step cargo clippy --workspace --all-targets -- -D warnings
+  step cargo test --workspace
+  step cargo llvm-cov -p io-core --tests --summary-only --fail-under-lines 80
+  step cargo audit
+  step cargo run --release -p io-core --example multiplex_bench
+}
+
+case "${1:-all}" in
+  all) run_all ;;
+  fmt) step cargo fmt --all -- --check ;;
+  clippy) step cargo clippy --workspace --all-targets -- -D warnings ;;
+  test) step cargo test --workspace ;;
+  coverage) step cargo llvm-cov -p io-core --tests --summary-only --fail-under-lines 80 ;;
+  audit) step cargo audit ;;
+  bench) step cargo run --release -p io-core --example multiplex_bench ;;
+  mutants)
+    step cargo mutants -p io-core \
+      --file crates/io-core/src/uri.rs \
+      --file crates/io-core/src/error.rs \
+      --timeout 60 --jobs 4
+    ;;
+  *)
+    echo "usage: $0 {all|fmt|clippy|test|coverage|audit|bench|mutants}" >&2
+    exit 2
+    ;;
+esac

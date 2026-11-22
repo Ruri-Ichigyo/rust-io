@@ -102,6 +102,25 @@ impl IoEngineBuilder {
     }
 }
 
+/// One operation in a heterogeneous multiplexed batch.
+#[derive(Debug, Clone)]
+pub enum MuxOp {
+    Read(Uri),
+    Write(Uri, Bytes),
+    Stat(Uri),
+    Delete(Uri),
+    Hash(Uri),
+}
+
+/// Result of a [`MuxOp`].
+#[derive(Debug)]
+pub enum MuxOutcome {
+    Bytes(Bytes),
+    Unit,
+    Metadata(Metadata),
+    Hash(String),
+}
+
 /// Facade over all backends: routing, deadlines, retries, multiplexing, streaming.
 #[derive(Clone)]
 pub struct IoEngine {
@@ -606,5 +625,46 @@ impl IoEngine {
             }
         }
         Err(IoError::AllFailed(failures))
+    }
+
+    /// Run heterogeneous operations concurrently, yielding `(input_index, result)` in
+    /// completion order. `limit` bounds in-flight operations; one failure never aborts
+    /// the batch. Callers that need input order can sort by the returned index.
+    pub async fn mux(
+        &self,
+        ops: &[MuxOp],
+        limit: usize,
+        timeout: Option<Duration>,
+    ) -> IoResult<Vec<(usize, IoResult<MuxOutcome>)>> {
+        if limit == 0 {
+            return Err(IoError::InvalidConfig(
+                "concurrency limit must be greater than zero".into(),
+            ));
+        }
+        let tasks = ops.iter().cloned().enumerate().map(|(index, op)| {
+            let engine = self.clone();
+            async move {
+                let outcome = match op {
+                    MuxOp::Read(uri) => engine.read(&uri, timeout).await.map(MuxOutcome::Bytes),
+                    MuxOp::Write(uri, data) => engine
+                        .write(&uri, data, timeout)
+                        .await
+                        .map(|()| MuxOutcome::Unit),
+                    MuxOp::Stat(uri) => engine.stat(&uri, timeout).await.map(MuxOutcome::Metadata),
+                    MuxOp::Delete(uri) => engine
+                        .delete(&uri, timeout)
+                        .await
+                        .map(|()| MuxOutcome::Unit),
+                    MuxOp::Hash(uri) => engine.hash(&uri, timeout).await.map(MuxOutcome::Hash),
+                };
+                (index, outcome)
+            }
+        });
+        let mut buffered = stream::iter(tasks).buffer_unordered(limit);
+        let mut completed = Vec::with_capacity(ops.len());
+        while let Some(item) = buffered.next().await {
+            completed.push(item);
+        }
+        Ok(completed)
     }
 }

@@ -35,9 +35,40 @@ async def main():
 asyncio.run(main())
 ```
 
-Capabilities: bounded concurrent batches, first-success mirror races (`read_any`), per-call
-deadlines, retry only for transient errors, atomic local writes, streamed upload/download,
-and parallel streaming SHA-256.
+Capabilities: bounded concurrent batches, heterogeneous multiplexing (`mux`), first-success
+mirror races (`read_any`), per-call deadlines, retry only for transient errors, atomic local
+writes, streamed upload/download, and parallel streaming SHA-256.
+
+From Rust, the same engine exposes a heterogeneous multiplexer that returns results in
+completion order:
+
+```rust
+use io_core::{IoEngine, MuxOp, Uri};
+
+let engine = IoEngine::new()?;
+let ops = [
+    MuxOp::Read(Uri::parse("/tmp/a.bin")?),
+    MuxOp::Stat(Uri::parse("https://example.com/b.bin")?),
+    MuxOp::Hash(Uri::parse("s3://bucket/c.bin")?),
+];
+let completed = engine.mux(&ops, 8, None).await?;
+```
+
+## Optimization harness
+
+`scripts/rust-anything` is the repo-local Rust optimization gauntlet: format, clippy
+(`-D warnings`), workspace tests, io-core coverage gate, dependency audit, a
+sequential-vs-multiplexed benchmark, and optional mutation testing.
+
+```bash
+./scripts/rust-anything all
+./scripts/rust-anything bench
+./scripts/rust-anything mutants
+```
+
+The benchmark reports both numbers rather than assuming a win: on cached local files
+(tmpfs) scheduling overhead can make bounded concurrency slower than sequential reads;
+the multiplexer targets latency-bound and heterogeneous workloads.
 
 ## Existing modules
 

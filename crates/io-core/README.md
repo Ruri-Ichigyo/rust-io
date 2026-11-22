@@ -12,6 +12,7 @@
 | Streaming transfer | `IoEngine::{download,upload}` |
 | SHA-256 (streaming) / parallel batch | `IoEngine::{hash,hash_many}` |
 | Bounded concurrency | `IoEngine::{read_many,write_many,copy_many}` |
+| Heterogeneous multiplexing (completion order) | `IoEngine::mux` + `MuxOp` |
 | First-success race (mirrors) | `IoEngine::read_any` |
 | Retry + jitter + per-call deadline | `RetryPolicy`, `timeout` argument |
 
@@ -35,6 +36,24 @@ for (uri, result) in results {
 }
 ```
 
+Heterogeneous multiplexing returns `(input_index, result)` as each operation finishes:
+
+```rust
+use io_core::MuxOp;
+
+let completed = engine
+    .mux(
+        &[
+            MuxOp::Read(uri.clone()),
+            MuxOp::Stat(uri.clone()),
+            MuxOp::Hash(uri.clone()),
+        ],
+        8,
+        Some(Duration::from_secs(30)),
+    )
+    .await?;
+```
+
 Streaming upload/download never buffers the whole object:
 
 ```rust
@@ -51,6 +70,7 @@ IoEngine (facade)
  │               S3Backend     (aws-sdk-s3, lazy shared client, ByteStream)
  ├─ RetryPolicy + deadline      (exponential backoff, jitter, typed retryability)
  ├─ Bounded multiplexer         (futures::buffer_unordered, ordered results)
+ ├─ Heterogeneous mux           (MuxOp → first-completed results)
  └─ Blocking pool               (spawn_blocking + rayon for CPU hashing)
 ```
 
