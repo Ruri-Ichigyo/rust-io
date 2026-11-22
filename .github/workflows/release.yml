@@ -152,6 +152,15 @@ jobs:
         uses: astral-sh/setup-uv@v7
       - name: Publish to PyPI
         if: ${{ startsWith(github.ref, 'refs/tags/') }}
-        run: uv publish "wheels-*/*"
         env:
-          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+          RAW_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          token="$(printf '%s' "$RAW_PYPI_TOKEN" | tr -d '\r\n\t ')"
+          if [ -z "$token" ]; then
+            echo "PYPI_API_TOKEN is empty" >&2
+            exit 1
+          fi
+          UV_PUBLISH_TOKEN="$token" uv publish \
+            --check-url https://pypi.org/simple/rust-io/ \
+            "wheels-*/*"
