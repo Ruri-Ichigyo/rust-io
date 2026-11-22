@@ -1,0 +1,49 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Existing Release run whose artifacts should be published"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: astral-sh/setup-uv@v7
+      - name: Download built artifacts
+        run: gh run download "${{ inputs.run_id }}" --repo "$GITHUB_REPOSITORY" --dir artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: List files
+        run: find artifacts -type f \( -name '*.whl' -o -name '*.tar.gz' \) | sort
+      - name: Publish with token
+        id: token
+        continue-on-error: true
+        env:
+          RAW_PYPI_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          token="$(printf '%s' "$RAW_PYPI_TOKEN" | tr -d '\r\n\t ')"
+          case "$token" in
+            pypi-*) ;;
+            *)
+              echo "PYPI_API_TOKEN does not start with 'pypi-'; it is not a PyPI API token" >&2
+              exit 1
+              ;;
+          esac
+          UV_PUBLISH_TOKEN="$token" uv publish \
+            --check-url https://pypi.org/simple/rust-io/ \
+            "artifacts/**/*.whl" "artifacts/**/*.tar.gz"
+      - name: Publish with trusted publishing
+        if: steps.token.outcome == 'failure'
+        run: |
+          uv publish --trusted-publishing always \
+            --check-url https://pypi.org/simple/rust-io/ \
+            "artifacts/**/*.whl" "artifacts/**/*.tar.gz"
