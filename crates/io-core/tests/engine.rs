@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
 use io_core::backend::http::HttpBackend;
-use io_core::{IoEngine, IoError, RetryPolicy, Uri};
+use io_core::{IoEngine, IoError, IoResult, MuxOp, MuxOutcome, RetryPolicy, Uri};
 
 mod common;
 use common::{Response, TestServer};
@@ -180,6 +181,51 @@ async fn engine_retries_truncated_download_and_cleans_temp_files() {
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     assert_eq!(names, vec!["out.bin".to_string()]);
+}
+
+#[tokio::test]
+async fn engine_mux_runs_heterogeneous_ops_in_completion_order() {
+    let server = TestServer::start(|_| {
+        Response::ok(b"slow".to_vec()).with_delay(Duration::from_millis(300))
+    })
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("local.txt");
+    std::fs::write(&file, b"local").unwrap();
+    let missing = dir.path().join("missing.txt");
+    let created = dir.path().join("created.txt");
+    let engine = IoEngine::new().unwrap();
+
+    let ops = vec![
+        MuxOp::Read(http_uri(&server, "/slow")),
+        MuxOp::Read(uri(&file)),
+        MuxOp::Stat(uri(&file)),
+        MuxOp::Hash(uri(&file)),
+        MuxOp::Read(uri(&missing)),
+        MuxOp::Write(uri(&created), Bytes::from_static(b"new")),
+    ];
+    let results = engine.mux(&ops, 4, None).await.unwrap();
+
+    assert_eq!(results.len(), 6);
+    assert_ne!(
+        results[0].0, 0,
+        "the 300ms HTTP read must not complete first"
+    );
+    let by_index: HashMap<usize, IoResult<MuxOutcome>> = results.into_iter().collect();
+    match &by_index[&1] {
+        Ok(MuxOutcome::Bytes(bytes)) => assert_eq!(bytes, &Bytes::from_static(b"local")),
+        other => panic!("unexpected read outcome: {other:?}"),
+    }
+    assert!(matches!(&by_index[&2], Ok(MuxOutcome::Metadata(_))));
+    assert!(matches!(&by_index[&3], Ok(MuxOutcome::Hash(_))));
+    assert!(matches!(&by_index[&4], Err(IoError::NotFound(_))));
+    assert!(matches!(&by_index[&5], Ok(MuxOutcome::Unit)));
+    assert_eq!(std::fs::read(&created).unwrap(), b"new");
+
+    assert!(matches!(
+        engine.mux(&ops, 0, None).await,
+        Err(IoError::InvalidConfig(_))
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

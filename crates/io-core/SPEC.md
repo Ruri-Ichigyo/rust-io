@@ -91,6 +91,9 @@ Evolve `rust-io` from a Lingua Seeker-specific helper into a general-purpose I/O
 - `read_any(uris)` returns the first successful `(Uri, Bytes)` and cancels the remaining
   futures; all failures → `IoError::AllFailed` containing every cause.
 - `limit` and timeouts are enforced across mixed backends.
+- Heterogeneous mux (revision during optimization): `IoEngine::mux` fans out
+  Read/Write/Stat/Delete/Hash under the same bound, yields `(input_index, result)` in
+  completion order, and isolates per-operation errors.
 
 ### B7 — Multithreaded hashing
 

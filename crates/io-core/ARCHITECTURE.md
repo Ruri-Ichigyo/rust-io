@@ -20,6 +20,7 @@
 | Typed errors | `IoError` | Callers can distinguish retryable vs permanent without string matching. |
 | RAII | `TempPath` | Temp files are removed on error without async cleanup code. |
 | Bounded pipeline | `buffer_unordered(limit)` | Real multiplexing with ordered results and per-item isolation. |
+| Heterogeneous fan-out | `IoEngine::mux` + `MuxOp` | Reads/writes/stats/hashes complete as they finish; input index preserves identity. |
 | Bulkhead | per-call timeout + bounded attempts | One slow backend cannot pin the runtime indefinitely. |
 | Lazy singleton | `S3Backend::client` (`tokio::sync::OnceCell`) | Client is built once, on first use, never at import. |
 
@@ -35,6 +36,7 @@ caller
        │         ├─ Http: pooled reqwest, Range/HEAD/PUT, streamed body
        │         └─ S3: lazy aws-sdk-s3 client, ByteStream (zero-copy writes)
        └─ bounded batches: buffer_unordered(limit) → sort by input index
+       └─ heterogeneous mux: MuxOp fan-out → completion order with input index
 ```
 
 ## Invariants
