@@ -42,18 +42,23 @@ ships its own fail-closed gauntlet: `scripts/rust-anything {all|fmt|clippy|test|
 `all` runs format, clippy `-D warnings`, workspace tests, the io-core 80% line-coverage
 gate, `cargo audit`, and `examples/multiplex_bench.rs`.
 
-Benchmark (256 × 256 KiB files, 64 MiB total, local tmpfs):
+Benchmark (256 × 256 KiB local files plus 64 HTTP requests with 30 ms latency):
 
 ```text
-sequential_ms=5.50
-multiplex_ms=8.22
-speedup=0.67x
-throughput_MiB_s=7781.4
+files=256 bytes=67108864 limit=32
+sequential_ms=7.17
+multiplex_ms=6.76
+speedup=1.06x
+throughput_MiB_s=9460.5
+remote_requests=64 remote_delay_ms=30 limit=8
+remote_sequential_ms=2005.23
+remote_multiplex_ms=252.40
+remote_speedup=7.94x
 ```
 
-This is reported honestly: for cached local reads the async/scheduling overhead can
-outweigh parallel I/O. Multiplexing targets latency-bound (HTTP/S3) and heterogeneous
-workloads; the harness prints both numbers instead of asserting a win.
+This is reported honestly: cached local reads are within run-to-run noise (0.67x–1.06x
+across runs), while latency-bound HTTP requests show ~7.9x. Multiplexing targets the
+latter; the harness prints both numbers instead of asserting a win.
 
 ## Independent review (old-coder verification pass)
 

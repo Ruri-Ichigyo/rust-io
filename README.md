@@ -66,9 +66,9 @@ sequential-vs-multiplexed benchmark, and optional mutation testing.
 ./scripts/rust-anything mutants
 ```
 
-The benchmark reports both numbers rather than assuming a win: on cached local files
-(tmpfs) scheduling overhead can make bounded concurrency slower than sequential reads;
-the multiplexer targets latency-bound and heterogeneous workloads.
+The benchmark reports both numbers rather than assuming a win: cached local files are
+roughly at parity (0.67x–1.06x across runs, scheduling noise), while 64 HTTP requests
+with 30 ms latency improve from ~2005 ms to ~252 ms (7.9x) at `limit=8`.
 
 ## Existing modules
 
