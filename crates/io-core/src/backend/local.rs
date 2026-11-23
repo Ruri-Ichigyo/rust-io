@@ -179,6 +179,22 @@ impl IoBackend for LocalBackend {
         Ok(Box::new(file))
     }
 
+    async fn open_range(
+        &self,
+        uri: &Uri,
+        offset: u64,
+        length: u64,
+    ) -> IoResult<Box<dyn AsyncRead + Send + Unpin>> {
+        let path = local_path(uri)?;
+        let mut file = tokio::fs::File::open(path)
+            .await
+            .map_err(|error| path_error(path, error))?;
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .map_err(|error| path_error(path, error))?;
+        Ok(Box::new(file.take(length)))
+    }
+
     async fn write_from_path(&self, uri: &Uri, path: &Path, _len: u64) -> IoResult<()> {
         let target = local_path(uri)?;
         copy_atomic(path, target).await?;

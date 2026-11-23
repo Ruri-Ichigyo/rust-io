@@ -126,7 +126,7 @@ python -m pytest -q
 
 ## Verification
 
-- 82 Rust tests and 11 Python tests
+- 84 Rust tests and 11 Python tests
 - `io-core` line coverage 85.19%; mutation testing 16 caught, 0 missed
 - `cargo audit` clean
 - Latency-bound multiplex benchmark: 64 requests at 30 ms → 2005 ms sequential vs 252 ms

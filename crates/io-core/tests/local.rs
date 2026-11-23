@@ -12,6 +12,33 @@ fn uri(path: impl AsRef<std::path::Path>) -> Uri {
 }
 
 #[tokio::test]
+async fn local_open_range_streams_requested_slice() {
+    let dir = tempdir().unwrap();
+    let target = dir.path().join("range.bin");
+    let payload: Vec<u8> = (0..1024 * 1024).map(|index| (index % 251) as u8).collect();
+    std::fs::write(&target, &payload).unwrap();
+    let backend = LocalBackend::new();
+
+    let mut reader = backend.open_range(&uri(&target), 1000, 2048).await.unwrap();
+    let mut got = Vec::new();
+    reader.read_to_end(&mut got).await.unwrap();
+    assert_eq!(got, payload[1000..3048]);
+
+    let mut reader = backend.open_range(&uri(&target), 1000, 0).await.unwrap();
+    let mut empty = Vec::new();
+    reader.read_to_end(&mut empty).await.unwrap();
+    assert!(empty.is_empty());
+
+    let mut reader = backend
+        .open_range(&uri(&target), payload.len() as u64, 16)
+        .await
+        .unwrap();
+    let mut past_end = Vec::new();
+    reader.read_to_end(&mut past_end).await.unwrap();
+    assert!(past_end.is_empty());
+}
+
+#[tokio::test]
 async fn local_write_read_roundtrip_and_stat() {
     let dir = tempdir().unwrap();
     let target = dir.path().join("nested/deeper/sample.bin");

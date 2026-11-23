@@ -57,9 +57,12 @@ Evolve `rust-io` from a Lingua Seeker-specific helper into a general-purpose I/O
   `Backend` with the underlying message.
 - `download` streams response chunks to a file without buffering the whole object in memory
   (verified with an object larger than the 64 KiB stream chunk and a peak-buffer probe).
-- `download(..., connections>1)` probes `206 Partial Content`, then fetches independent byte
-  ranges concurrently and writes them with positional writes into a preallocated temp file;
-  servers without range support fall back to the single-stream path.
+- `download(..., connections>1)` probes `206 Partial Content` and `HEAD`s the object
+  concurrently, then streams independent byte ranges into a preallocated temp file. Each
+  segment owns one file descriptor and one 64 KiB buffer, so peak memory is
+  O(connections × 64 KiB), not O(object size); `Content-Range` offsets are validated.
+  Objects smaller than 256 KiB per connection, backends without range support, and servers
+  that ignore a later `Range` all fall back to the single-stream path.
 - The HTTP backend reuses one `reqwest::Client` per engine instance (connection pooling).
 
 ### B4 — S3 backend

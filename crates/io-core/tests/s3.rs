@@ -10,6 +10,7 @@ use bytes::Bytes;
 use io_core::backend::IoBackend;
 use io_core::backend::s3::{S3Backend, S3Config};
 use io_core::{IoError, Uri};
+use tokio::io::AsyncReadExt;
 
 mod common;
 use common::{S3Store, TestServer, s3_handler};
@@ -50,6 +51,11 @@ async fn s3_backend_roundtrip_against_in_memory_server() {
         Bytes::from_static(b"ello")
     );
     assert!(backend.read_range(&uri, 100, 1).await.unwrap().is_empty());
+
+    let mut reader = backend.open_range(&uri, 2, 3).await.unwrap();
+    let mut got = Vec::new();
+    reader.read_to_end(&mut got).await.unwrap();
+    assert_eq!(got, b"llo");
 
     let metadata = backend.stat(&uri).await.unwrap();
     assert_eq!(metadata.len, 8);
