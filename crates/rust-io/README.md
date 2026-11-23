@@ -1,145 +1,115 @@
 # rust-io
 
-> Lingua Seeker 的 PyO3 门面 crate，将 `net-io`、`files-io` 和 `io-py` 注册为 `rust_io` Python 模块的子模块。
-
-## 概览
-
-`rust-io` 是唯一构建为 `cdylib`（`.so`/`.pyd`）的 crate，通过 `import rust_io` 加载。它本身不包含业务逻辑，仅负责：
-
-1. 创建 `rust_io.net` 子模块，注册 `net-io` 的所有 `#[pyfunction]`
-2. 创建 `rust_io.files` 子模块，注册 `files-io` 的所有 `#[pyfunction]` 和 `#[pyclass]`
-3. 创建 `rust_io.io` 子模块，注册 `io-py` 的通用异步 I/O 函数
-4. 通过 `sys.modules` 注册子模块，使其可通过 `import rust_io.net` / `rust_io.files` / `rust_io.io` 直接访问
-
-## 公开 API
-
-`rust-io` 本身不定义业务 API，完整 API 参考见各子 crate：
-
-| Python 模块 | 来源 crate | 说明 |
-|-------------|-----------|------|
-| `rust_io.net` | [net-io](../net-io/README.md) | 15 个文献数据源、MinerU API、Web 爬取 |
-| `rust_io.files` | [files-io](../files-io/README.md) | File 类、批量操作、去重、工具函数 |
-| `rust_io.io` | [io-core](../io-core/README.md) | 通用异步 I/O：本地/HTTP/S3、多路复用、流式传输 |
-
-### `rust_io.net` 注册的函数
-
-| 函数 | 说明 |
-|------|------|
-| `fetch_one` | 单数据源文献搜索/下载 |
-| `fetch_multi` | 并行多数据源搜索 |
-| `scrape_web` | 数据源网页爬取 |
-| `scrape_html` | CSS 选择器 HTML 解析 |
-| `extract_pdf_links` | 提取 PDF 链接 |
-| `download_file` | 文件下载 |
-| `mineru_create_task` | MinerU 创建解析任务 |
-| `mineru_get_result` | MinerU 查询任务结果 |
-| `mineru_batch_submit` | MinerU 批量提交 |
-| `mineru_batch_result` | MinerU 批量结果查询 |
-| `mineru_create_upload_url` | MinerU 获取上传 URL |
-| `mineru_create_batch_upload_urls` | MinerU 批量获取上传 URL |
-| `mineru_upload_local_file` | MinerU 上传单个本地文件 |
-| `mineru_upload_local_files` | MinerU 上传多个本地文件 |
-
-### `rust_io.files` 注册的函数/类
-
-| 名称 | 类型 | 说明 |
-|------|------|------|
-| `File` | class | 统一文件操作（本地 + S3） |
-| `batch_copy` | function | 批量文件复制 |
-| `batch_compress` | function | 批量目录压缩 |
-| `batch_copy_async` | function | 异步批量复制 |
-| `check_duplicate` | function | 文件去重检查 |
-| `batch_hash` | function | 批量 SHA-256 哈希 |
-| `compute_sha256` | function | 单文件 SHA-256 |
-| `write_file` | function | 写入字节数据 |
-| `validate_pdf_magic` | function | PDF 魔数校验 |
-
-### `rust_io.io` 注册的函数
-
-| 函数 | 说明 |
-|------|------|
-| `read` / `read_range` | 读取整个对象 / 指定字节区间 |
-| `write` | 写入 bytes/bytearray/memoryview/str |
-| `stat` / `list` / `delete` / `copy` | 元数据、目录列举、删除、复制 |
-| `read_many` / `write_many` / `copy_many` | 有界并发批处理，结果按输入顺序返回 |
-| `read_any` | 多镜像竞速，返回首个成功结果 |
-| `download` / `upload` | 流式下载/上传（不整文件驻留内存） |
-| `hash` / `hash_many` | 流式 SHA-256 / rayon 并行批哈希 |
-
-## 架构
-
-```
-rust-io/src/
-└── lib.rs    # #[pymodule] rust_io — 挂载 net、files、io 子模块
-```
-
-### 子模块注册机制
-
-`net-io` 和 `files-io` 各自用 `#[pymodule(submodule)]` 声明 Python 子模块并导出自己的 API，`rust-io` 只负责挂载，不再逐个重复注册函数：
-
-```rust
-#[pymodule]
-fn rust_io(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    let py = m.py();
-    let net = pyo3::wrap_pymodule!(net_io::py::net)(py);
-    register_submodule(m, "net", "rust_io.net", net.bind(py))?;
-    let files = pyo3::wrap_pymodule!(files_io::py::files)(py);
-    register_submodule(m, "files", "rust_io.files", files.bind(py))?;
-    let io = pyo3::wrap_pymodule!(io_py::io)(py);
-    register_submodule(m, "io", "rust_io.io", io.bind(py))?;
-    Ok(())
-}
-```
-
-`register_submodule` 完成三步操作：
-1. `parent.add(name, submodule)` — 挂载为父模块属性
-2. 设置 `submodule.__name__ = "rust_io.net"`（完整限定名）
-3. `sys.modules["rust_io.net"] = submodule` — 使 `import rust_io.net` 可用
-
-新增函数只需在所属 crate 的 `#[pymodule]` 中导出，门面 crate 无需改动。
-
-## 使用示例
-
-```python
-# 通过 rust_io 门面访问所有功能
-import rust_io
-
-# 或直接导入子模块
-import rust_io.net as net_io
-import rust_io.files as files_io
-
-# 文献搜索
-result = await net_io.fetch_one("crossref", "search", {"query": "CRISPR"})
-
-# 文件操作
-f = files_io.File("/tmp/output.txt")
-f.write("hello")
-print(f.read(as_text=True))
-
-# 通用异步 I/O（本地/HTTP/S3 统一 URI）
-import rust_io.io as io_io
-await io_io.write("/tmp/report.bin", b"payload")
-results = await io_io.read_many(
-    ["/tmp/a.bin", "s3://bucket/b.bin", "https://example.com/c.bin"],
-    limit=3,
-)
-await io_io.download("https://example.com/paper.pdf", "/tmp/paper.pdf")
-```
-
-## 构建
+> High-performance Rust native extensions for Python: one async I/O engine for local files,
+> HTTP(S), and S3 — plus literature search, MinerU parsing, archives, and SHA-256 dedup.
 
 ```bash
-# 从仓库根目录构建（maturin 会自动解析 Cargo.toml 中的 path 依赖）
-uv run maturin develop --release -m crates/rust-io/Cargo.toml
+pip install rust-io
 ```
 
-构建产物为 `rust_io.so`（Linux/macOS）或 `rust_io.pyd`（Windows），包含 `net-io`、`files-io` 和 `io-core` 的全部代码（静态链接）。
+Requires Python 3.12+ and a CPython/PyPy build for your platform. Wheels are published for
+Linux (glibc and musl, x86_64/aarch64), macOS (x86_64/arm64), and Windows (x64).
 
-## 依赖
+## Generic async I/O: `rust_io.io`
 
-| 依赖 | 版本 | 说明 |
-|------|------|------|
-| `pyo3` | `0.30` | Python 绑定（extension-module） |
-| `net-io` | path | HTTP/Web I/O crate（提供 `rust_io.net`） |
-| `files-io` | path | 文件 I/O crate（提供 `rust_io.files`） |
-| `io-py` | path | 通用 I/O 绑定 crate（提供 `rust_io.io`） |
+One URI model (`/path`, `file://`, `http(s)://`, `s3://`) with a single async engine:
+
+```python
+import asyncio
+import rust_io.io as io
+
+async def main():
+    await io.write("/tmp/report.bin", b"payload")
+
+    # Bounded concurrent batch; results in input order, one failure does not abort.
+    results = await io.read_many(
+        ["/tmp/a.bin", "s3://bucket/b.bin", "https://example.com/c.bin"],
+        limit=8,
+    )
+
+    # First-success race across mirrors.
+    winner = await io.read_any([mirror_1, mirror_2])
+
+    # Streamed transfer; the whole object is never buffered in memory.
+    await io.download("https://example.com/paper.pdf", "/tmp/paper.pdf")
+    digest = await io.hash("/tmp/paper.pdf")
+
+asyncio.run(main())
+```
+
+| Function | Purpose |
+|---|---|
+| `read` / `read_range` | Read an object or a byte range |
+| `write` | Write bytes, bytearray, memoryview, or str |
+| `stat` / `list` / `delete` / `copy` | Metadata, listing, deletion, copy |
+| `read_many` / `write_many` / `copy_many` | Bounded concurrent batches, input order |
+| `read_any` | Race mirrors, return the first success |
+| `download` / `upload` | Streaming transfers with atomic local replacement |
+| `hash` / `hash_many` | Streaming SHA-256, parallel batch hashing |
+
+Under the hood (`io-core`): retries only for transient errors, whole-call deadlines,
+bounded multiplexing, atomic local writes, cross-backend copy via a private spill file,
+and a heterogeneous `IoEngine::mux` in the Rust API.
+
+## Modules
+
+| Python module | Description |
+|---|---|
+| `rust_io.io` | Generic async I/O for local files, HTTP(S), and S3 (above) |
+| `rust_io.files` | `File` class, batch copy/compress, archives, SHA-256 dedup |
+| `rust_io.net` | 15 literature sources, MinerU API, web scraping |
+
+### `rust_io.files`
+
+```python
+import rust_io.files as files
+
+handle = files.File("/tmp/output.txt")
+handle.write("hello")
+print(handle.read(as_text=True))
+print(handle.content_hash())
+```
+
+### `rust_io.net`
+
+```python
+import rust_io.net as net
+
+result = await net.fetch_one("crossref", "search", {"query": "CRISPR", "limit": 5})
+results = await net.fetch_multi(["crossref", "openalex"], "search", {"query": "BRCA1"})
+parsed = await net.mineru_create_task("https://example.com/paper.pdf", token="...")
+```
+
+## S3 configuration
+
+`unset` values fall back to the AWS default credential chain.
+
+| Variable | Meaning |
+|---|---|
+| `IO_S3_ENDPOINT` | Custom endpoint (MinIO/LocalStack); enables path-style addressing |
+| `IO_S3_REGION` | Region |
+| `IO_S3_ACCESS_KEY` / `IO_S3_SECRET_KEY` / `IO_S3_SESSION_TOKEN` | Explicit credentials |
+| `IO_S3_PATH_STYLE` | `1`/`true` forces path-style |
+
+## Build from source
+
+Requires Rust 1.85+ (edition 2024).
+
+```bash
+python -m venv .venv && . .venv/bin/activate
+pip install maturin
+maturin develop --release -m crates/rust-io/Cargo.toml
+```
+
+## Verification
+
+- 79 Rust tests and 11 Python tests
+- `io-core` line coverage 85.19%, mutation score 16/16 non-equivalent mutants
+- `cargo audit` clean
+- Multiplex benchmark: 64 HTTP requests at 30 ms latency → 2005 ms sequential vs 252 ms at `limit=8`
+
+Source, issues, and docs: <https://github.com/Ruri-Ichigyo/rust-io>
+
+## License
+
+Apache-2.0.

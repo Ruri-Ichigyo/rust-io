@@ -3,6 +3,17 @@
 > High-performance Rust native extensions for Python: one async I/O engine for local files,
 > HTTP(S), and S3, plus literature search, MinerU document parsing, archives, and SHA-256 dedup.
 
+**PyPI:** <https://pypi.org/project/rust-io/> · **Releases:** <https://github.com/Ruri-Ichigyo/rust-io/releases>
+
+## Install
+
+```bash
+pip install rust-io
+```
+
+Wheels are published for Linux (glibc and musl, x86_64/aarch64), macOS (x86_64/arm64),
+and Windows (x64). Python 3.12+.
+
 ## Crates
 
 | Crate | Python module | Kind | Purpose |
@@ -109,6 +120,14 @@ python -m pytest -q
 
 `io-core` also has a SPEC and architecture note:
 [SPEC.md](crates/io-core/SPEC.md), [ARCHITECTURE.md](crates/io-core/ARCHITECTURE.md).
+
+## Verification
+
+- 79 Rust tests and 11 Python tests
+- `io-core` line coverage 85.19%; mutation testing 16 caught, 0 missed
+- `cargo audit` clean
+- Latency-bound multiplex benchmark: 64 requests at 30 ms → 2005 ms sequential vs 252 ms
+  at `limit=8` (7.9x)
 
 ## License
 
