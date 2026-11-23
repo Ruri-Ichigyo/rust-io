@@ -351,19 +351,28 @@ pub fn read_any<'py>(
 }
 
 #[pyfunction]
-#[pyo3(signature = (uri, path, timeout_ms=None))]
+#[pyo3(signature = (uri, path, timeout_ms=None, connections=1))]
 pub fn download<'py>(
     py: Python<'py>,
     uri: String,
     path: String,
     timeout_ms: Option<u64>,
+    connections: usize,
 ) -> PyResult<Bound<'py, PyAny>> {
     pyo3_async_runtimes::tokio::future_into_py(py, async move {
         let uri = Uri::parse(&uri).map_err(to_py_error)?;
-        engine()?
-            .download(&uri, &PathBuf::from(path), timeout(timeout_ms))
-            .await
-            .map_err(to_py_error)
+        let destination = PathBuf::from(path);
+        let engine = engine()?;
+        let result = if connections > 1 {
+            engine
+                .download_parallel(&uri, &destination, connections, timeout(timeout_ms))
+                .await
+        } else {
+            engine
+                .download(&uri, &destination, timeout(timeout_ms))
+                .await
+        };
+        result.map_err(to_py_error)
     })
 }
 

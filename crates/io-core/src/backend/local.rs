@@ -92,26 +92,45 @@ async fn write_atomic(target: &Path, data: &[u8]) -> IoResult<()> {
 async fn copy_atomic(source: &Path, target: &Path) -> IoResult<u64> {
     ensure_parent(target).await?;
     let mut temp = temp_path(target);
-    let path = temp.path().to_path_buf();
+    let temp_path = temp.path().to_path_buf();
+    let source = source.to_path_buf();
+    let destination = temp_path.clone();
 
-    let mut input = tokio::fs::File::open(source)
+    let copied = tokio::task::spawn_blocking(move || copy_file(&source, &destination))
         .await
-        .map_err(|error| path_error(source, error))?;
-    let mut output = temp
-        .create(false)
-        .await
-        .map_err(|error| path_error(&path, error))?;
-    let copied = tokio::io::copy(&mut input, &mut output)
-        .await
-        .map_err(|error| path_error(&path, error))?;
-    output
-        .sync_all()
-        .await
-        .map_err(|error| path_error(&path, error))?;
-    drop(output);
+        .map_err(|error| IoError::Other(format!("copy task failed: {error}")))?
+        .map_err(|error| path_error(&temp_path, error))?;
 
     finish_atomic(&mut temp, target).await?;
     Ok(copied)
+}
+
+fn copy_file(source: &Path, target: &Path) -> std::io::Result<u64> {
+    // Linux: try a copy-on-write reflink first; fall back to the kernel's
+    // copy_file_range path via std::fs::copy.
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::PermissionsExt;
+
+        let src = std::fs::File::open(source)?;
+        let dst = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(target)?;
+        if rustix::fs::ioctl_ficlone(&dst, &src).is_ok() {
+            if let Ok(metadata) = src.metadata() {
+                let mode = metadata.permissions().mode() & 0o777;
+                let _ = dst.set_permissions(std::fs::Permissions::from_mode(mode));
+            }
+            dst.sync_all()?;
+            return Ok(src.metadata()?.len());
+        }
+        drop(dst);
+        std::fs::remove_file(target)?;
+    }
+    std::fs::copy(source, target)
 }
 
 #[async_trait]

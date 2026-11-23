@@ -212,6 +212,22 @@ async fn local_atomic_write_preserves_existing_permissions() {
 }
 
 #[tokio::test]
+async fn local_copy_large_file() {
+    let dir = tempdir().unwrap();
+    let backend = LocalBackend::new();
+    let source = dir.path().join("source-large.bin");
+    let target = dir.path().join("target-large.bin");
+    let payload: Vec<u8> = (0..4 * 1024 * 1024)
+        .map(|index| (index % 251) as u8)
+        .collect();
+    std::fs::write(&source, &payload).unwrap();
+
+    backend.copy(&uri(&source), &uri(&target)).await.unwrap();
+
+    assert_eq!(std::fs::read(&target).unwrap(), payload);
+}
+
+#[tokio::test]
 async fn local_write_supports_long_basenames() {
     let dir = tempdir().unwrap();
     let backend = LocalBackend::new();

@@ -228,6 +228,93 @@ async fn engine_mux_runs_heterogeneous_ops_in_completion_order() {
     ));
 }
 
+#[tokio::test]
+async fn engine_parallel_download_uses_independent_ranges() {
+    const SIZE: usize = 1024 * 1024;
+    let body: Arc<Vec<u8>> = Arc::new((0..SIZE).map(|index| (index % 251) as u8).collect());
+    let hits = Arc::new(AtomicUsize::new(0));
+    let handler_body = body.clone();
+    let handler_hits = hits.clone();
+
+    let server = TestServer::start(move |request| {
+        handler_hits.fetch_add(1, Ordering::SeqCst);
+        if request.method == "HEAD" {
+            return Response::ok(Vec::new())
+                .with_header("Content-Length", &handler_body.len().to_string());
+        }
+        if let Some(range) = request.header("range")
+            && let Some(spec) = range.strip_prefix("bytes=")
+            && let Some((start, end)) = spec.split_once('-')
+        {
+            let start = start.parse::<usize>().unwrap_or(0);
+            let end = end
+                .parse::<usize>()
+                .unwrap_or(handler_body.len() - 1)
+                .min(handler_body.len() - 1);
+            return Response::ok(handler_body[start..=end].to_vec())
+                .with_status(206)
+                .with_header(
+                    "Content-Range",
+                    &format!("bytes {start}-{end}/{}", handler_body.len()),
+                );
+        }
+        Response::ok(handler_body.to_vec())
+    })
+    .await;
+
+    let engine = IoEngine::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("parallel.bin");
+    let written = engine
+        .download_parallel(
+            &http_uri(&server, "/big"),
+            &destination,
+            4,
+            Some(Duration::from_secs(10)),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(written, SIZE as u64);
+    assert_eq!(std::fs::read(&destination).unwrap(), *body);
+    assert!(
+        hits.load(Ordering::SeqCst) >= 5,
+        "expected probe + HEAD + 4 range requests, got {}",
+        hits.load(Ordering::SeqCst)
+    );
+}
+
+#[tokio::test]
+async fn engine_parallel_download_falls_back_without_range_support() {
+    let body = vec![0x5Au8; 64 * 1024];
+    let hits = Arc::new(AtomicUsize::new(0));
+    let handler_body = body.clone();
+    let handler_hits = hits.clone();
+
+    let server = TestServer::start(move |request| {
+        handler_hits.fetch_add(1, Ordering::SeqCst);
+        if request.method == "HEAD" {
+            return Response::ok(Vec::new())
+                .with_header("Content-Length", &handler_body.len().to_string());
+        }
+        // Ignore Range and always return the full object.
+        Response::ok(handler_body.clone())
+    })
+    .await;
+
+    let engine = IoEngine::new().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let destination = dir.path().join("fallback.bin");
+    let written = engine
+        .download_parallel(&http_uri(&server, "/plain"), &destination, 4, None)
+        .await
+        .unwrap();
+
+    assert_eq!(written, body.len() as u64);
+    assert_eq!(std::fs::read(&destination).unwrap(), body);
+    assert_eq!(hits.load(Ordering::SeqCst), 2, "probe + single download");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn engine_bounds_concurrency_and_preserves_order() {
     let hits = Arc::new(AtomicUsize::new(0));

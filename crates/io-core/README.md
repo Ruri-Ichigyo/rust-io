@@ -10,6 +10,7 @@
 | URI routing (`file`, plain path, `s3://`, `http(s)://`) | `Uri::parse` |
 | Read / range read / write / stat / list / delete / copy | `IoEngine::{read,read_range,write,stat,list,delete,copy}` |
 | Streaming transfer | `IoEngine::{download,upload}` |
+| Segmented parallel download | `IoEngine::download_parallel` (`connections`) |
 | SHA-256 (streaming) / parallel batch | `IoEngine::{hash,hash_many}` |
 | Bounded concurrency | `IoEngine::{read_many,write_many,copy_many}` |
 | Heterogeneous multiplexing (completion order) | `IoEngine::mux` + `MuxOp` |
@@ -60,6 +61,18 @@ Streaming upload/download never buffers the whole object:
 engine.download(&uri, Path::new("/tmp/paper.pdf"), None).await?;
 engine.upload(Path::new("/tmp/paper.pdf"), &uri, None).await?;
 ```
+
+When the server supports `206 Partial Content`, parallelise a large download:
+
+```rust
+// HEAD + range probe, then 8 concurrent byte ranges written with pwrite.
+let bytes = engine
+    .download_parallel(&uri, Path::new("/tmp/paper.pdf"), 8, None)
+    .await?;
+```
+
+Local `copy` first attempts a copy-on-write reflink (`FICLONE`) and falls back to the
+kernel's `copy_file_range` path, always writing through a temp file plus atomic rename.
 
 ## Design
 
