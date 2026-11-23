@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use futures::{StreamExt, stream};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
 use crate::backend::http::HttpBackend;
 use crate::backend::local::LocalBackend;
@@ -17,6 +17,10 @@ use crate::temp::TempPath;
 use crate::uri::{Scheme, Uri};
 
 pub const DEFAULT_CONCURRENCY: usize = 8;
+
+/// Below this many bytes per connection, a segmented download costs more than
+/// the single stream it replaces.
+const MIN_PARALLEL_BYTES: u64 = 256 * 1024;
 
 /// Bounded retry policy for transient backend errors.
 #[derive(Debug, Clone)]
@@ -133,39 +137,6 @@ pub struct IoEngine {
 
 fn path_error(path: &Path, error: std::io::Error) -> IoError {
     IoError::from_io(&path.display().to_string(), error)
-}
-
-#[cfg(unix)]
-fn write_at(file: &std::fs::File, data: &[u8], offset: u64) -> std::io::Result<()> {
-    use std::os::unix::fs::FileExt;
-    file.write_all_at(data, offset)
-}
-
-#[cfg(windows)]
-fn write_at(file: &std::fs::File, data: &[u8], offset: u64) -> std::io::Result<()> {
-    use std::os::windows::fs::FileExt;
-    let mut written = 0usize;
-    while written < data.len() {
-        match file.seek_write(&data[written..], offset + written as u64) {
-            Ok(0) => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::WriteZero,
-                    "positional write made no progress",
-                ));
-            }
-            Ok(count) => written += count,
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(any(unix, windows)))]
-fn write_at(_file: &std::fs::File, _data: &[u8], _offset: u64) -> std::io::Result<()> {
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "positional writes are not supported on this platform",
-    ))
 }
 
 fn hash_local(path: &Path) -> IoResult<String> {
@@ -453,6 +424,71 @@ impl IoEngine {
         .await
     }
 
+    async fn copy_segment_once(
+        &self,
+        uri: &Uri,
+        offset: u64,
+        length: u64,
+        path: &Path,
+    ) -> IoResult<u64> {
+        let backend = self.backend(uri);
+        let mut reader = backend.open_range(uri, offset, length).await?;
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .await
+            .map_err(|error| path_error(path, error))?;
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .map_err(|error| path_error(path, error))?;
+
+        let mut buffer = vec![0u8; IO_CHUNK];
+        let mut written = 0u64;
+        loop {
+            let read = reader
+                .read(&mut buffer)
+                .await
+                .map_err(|error| IoError::from_io(&uri.to_string(), error))?;
+            if read == 0 {
+                break;
+            }
+            file.write_all(&buffer[..read])
+                .await
+                .map_err(|error| path_error(path, error))?;
+            written += read as u64;
+            if written > length {
+                return Err(IoError::Other(format!(
+                    "range at {offset} exceeded {length} bytes"
+                )));
+            }
+        }
+        if written != length {
+            return Err(IoError::Other(format!(
+                "short range at {offset}: expected {length}, got {written}"
+            )));
+        }
+        Ok(written)
+    }
+
+    async fn copy_segment(
+        &self,
+        uri: &Uri,
+        offset: u64,
+        length: u64,
+        path: &Path,
+        timeout: Option<Duration>,
+    ) -> IoResult<u64> {
+        let uri = uri.clone();
+        let path = path.to_path_buf();
+        self.with_retry(timeout, || {
+            let engine = self.clone();
+            let uri = uri.clone();
+            let path = path.clone();
+            async move { engine.copy_segment_once(&uri, offset, length, &path).await }
+        })
+        .await
+    }
+
     /// Segmented download over independent byte ranges. Falls back to the
     /// single-stream path when the backend or server cannot serve ranges.
     pub async fn download_parallel(
@@ -466,10 +502,14 @@ impl IoEngine {
             return self.download(uri, path, timeout).await;
         }
         let backend = self.backend(uri).clone();
-        if !matches!(backend.supports_parallel_ranges(uri).await, Ok(true)) {
+        let (supported, metadata) = tokio::join!(
+            backend.supports_parallel_ranges(uri),
+            self.stat(uri, timeout)
+        );
+        if !matches!(supported, Ok(true)) {
             return self.download(uri, path, timeout).await;
         }
-        let total = match self.stat(uri, timeout).await {
+        let total = match metadata {
             Ok(metadata) => metadata.len,
             Err(_) => return self.download(uri, path, timeout).await,
         };
@@ -478,9 +518,14 @@ impl IoEngine {
         }
 
         let connections = connections.clamp(2, 64);
+        if total < MIN_PARALLEL_BYTES.saturating_mul(connections as u64) {
+            return self.download(uri, path, timeout).await;
+        }
         let engine = self.clone();
         let uri = uri.clone();
         let path = path.to_path_buf();
+        let fallback_uri = uri.clone();
+        let fallback_path = path.clone();
 
         let work = async move {
             if let Some(parent) = path
@@ -501,7 +546,6 @@ impl IoEngine {
             file.set_len(total)
                 .await
                 .map_err(|error| path_error(&temp_path, error))?;
-            let file = Arc::new(file.into_std().await);
 
             let chunk = total.div_ceil(connections as u64);
             let mut segments = Vec::with_capacity(connections);
@@ -515,40 +559,23 @@ impl IoEngine {
             let tasks = segments.into_iter().map(|(offset, length)| {
                 let engine = engine.clone();
                 let uri = uri.clone();
-                let file = file.clone();
+                let temp_path = temp_path.clone();
                 async move {
-                    let bytes = engine.read_range(&uri, offset, length, timeout).await?;
-                    if bytes.len() as u64 != length {
-                        return Err(IoError::Other(format!(
-                            "short range at {offset}: expected {length}, got {}",
-                            bytes.len()
-                        )));
-                    }
-                    tokio::task::spawn_blocking(move || write_at(&file, &bytes, offset))
+                    engine
+                        .copy_segment(&uri, offset, length, &temp_path, timeout)
                         .await
-                        .map_err(|error| {
-                            IoError::Other(format!("range write task failed: {error}"))
-                        })?
-                        .map_err(|error| IoError::from_io(&uri.to_string(), error))?;
-                    Ok(length)
                 }
             });
-            let results = stream::iter(tasks)
-                .buffer_unordered(connections)
-                .collect::<Vec<IoResult<u64>>>()
-                .await;
+            let mut buffered = stream::iter(tasks).buffer_unordered(connections);
             let mut written = 0u64;
-            for result in results {
+            while let Some(result) = buffered.next().await {
                 written += result?;
             }
 
-            tokio::task::spawn_blocking({
-                let file = file.clone();
-                move || file.sync_all()
-            })
-            .await
-            .map_err(|error| IoError::Other(format!("sync task failed: {error}")))?
-            .map_err(|error| path_error(&temp_path, error))?;
+            file.sync_all()
+                .await
+                .map_err(|error| path_error(&temp_path, error))?;
+            drop(file);
 
             tokio::fs::rename(temp.path(), &path)
                 .await
@@ -557,11 +584,19 @@ impl IoEngine {
             Ok(written)
         };
 
-        match timeout.or(self.default_timeout) {
+        let outcome = match timeout.or(self.default_timeout) {
             Some(deadline) => tokio::time::timeout(deadline, work)
                 .await
                 .map_err(|_| IoError::Timeout(deadline))?,
             None => work.await,
+        };
+        match outcome {
+            // The probe succeeded but a later range request was not honoured
+            // (e.g. a proxy stripped Range); salvage it with one stream.
+            Err(IoError::Unsupported(_)) => {
+                self.download(&fallback_uri, &fallback_path, timeout).await
+            }
+            other => other,
         }
     }
 

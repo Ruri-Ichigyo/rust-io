@@ -50,6 +50,19 @@ pub trait IoBackend: Send + Sync {
 
     async fn open_read(&self, uri: &Uri) -> IoResult<Box<dyn AsyncRead + Send + Unpin>>;
 
+    /// Stream the half-open byte range `[offset, offset + length)` without
+    /// buffering it in memory. Used by segmented downloads.
+    async fn open_range(
+        &self,
+        _uri: &Uri,
+        _offset: u64,
+        _length: u64,
+    ) -> IoResult<Box<dyn AsyncRead + Send + Unpin>> {
+        Err(IoError::Unsupported(
+            "ranged streaming is not supported by this backend".into(),
+        ))
+    }
+
     /// Stream `path` into `uri`. `len` is the file length at validation time.
     async fn write_from_path(&self, uri: &Uri, path: &Path, len: u64) -> IoResult<()>;
 

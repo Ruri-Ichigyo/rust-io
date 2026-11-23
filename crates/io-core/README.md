@@ -65,7 +65,8 @@ engine.upload(Path::new("/tmp/paper.pdf"), &uri, None).await?;
 When the server supports `206 Partial Content`, parallelise a large download:
 
 ```rust
-// HEAD + range probe, then 8 concurrent byte ranges written with pwrite.
+// Concurrent probe + HEAD, then 8 streamed byte ranges written into the
+// preallocated temp file. Each segment holds one 64 KiB buffer.
 let bytes = engine
     .download_parallel(&uri, Path::new("/tmp/paper.pdf"), 8, None)
     .await?;

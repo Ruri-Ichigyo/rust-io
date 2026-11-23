@@ -9,7 +9,7 @@ use aws_sdk_s3::config::Region;
 use aws_sdk_s3::error::SdkError;
 use aws_sdk_s3::primitives::ByteStream;
 use bytes::Bytes;
-use tokio::io::AsyncRead;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::OnceCell;
 
 use super::{IoBackend, Metadata};
@@ -254,6 +254,51 @@ impl IoBackend for S3Backend {
             .await
             .map_err(|error| s3_error(uri, error))?;
         Ok(Box::new(response.body.into_async_read()))
+    }
+
+    async fn open_range(
+        &self,
+        uri: &Uri,
+        offset: u64,
+        length: u64,
+    ) -> IoResult<Box<dyn AsyncRead + Send + Unpin>> {
+        let (bucket, key) = s3_parts(uri)?;
+        if length == 0 {
+            return Ok(Box::new(tokio::io::empty()));
+        }
+        let end = offset
+            .checked_add(length - 1)
+            .ok_or_else(|| IoError::InvalidConfig("range overflows u64".into()))?;
+        let client = self.client().await?;
+        let response = match client
+            .get_object()
+            .bucket(bucket)
+            .key(key)
+            .range(format!("bytes={offset}-{end}"))
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error) if s3_status(&error) == Some(416) => {
+                return Ok(Box::new(tokio::io::empty()));
+            }
+            Err(error) => return Err(s3_error(uri, error)),
+        };
+        if let Some(range) = response.content_range() {
+            let start = range
+                .strip_prefix("bytes ")
+                .and_then(|value| value.split_once('-'))
+                .and_then(|(start, _)| start.parse::<u64>().ok());
+            if start != Some(offset) {
+                return Err(IoError::S3 {
+                    retryable: false,
+                    message: format!(
+                        "{uri}: unexpected Content-Range '{range}' for offset {offset}"
+                    ),
+                });
+            }
+        }
+        Ok(Box::new(response.body.into_async_read().take(length)))
     }
 
     async fn write_from_path(&self, uri: &Uri, path: &Path, _len: u64) -> IoResult<()> {

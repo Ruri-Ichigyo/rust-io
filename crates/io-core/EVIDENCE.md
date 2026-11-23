@@ -11,7 +11,7 @@ Tier: 3 (public API, concurrency, data I/O).
 |---|---|
 | B1 URI model | `src/uri.rs` unit tests: parse/round-trip/case/insensitive/hostile inputs |
 | B2 local backend | `tests/local.rs`: roundtrip, range clamp/NotFound, list/copy/delete (incl. 4 MiB kernel/reflink copy), atomic rewrite stress, no temp on failure, permission preservation, long basenames |
-| B3 HTTP backend | `tests/http.rs`: GET/HEAD/Range/PUT, 404/403/500 mapping, streamed upload, ignored-Range fallback, 416; `tests/engine.rs`: segmented parallel download (probe + 4 ranges) and fallback when ranges are unsupported |
+| B3 HTTP backend | `tests/http.rs`: GET/HEAD/Range/PUT, 404/403/500 mapping, streamed upload, ignored-Range fallback, 416; `tests/engine.rs`: streamed segmented download (probe + 4 ranges), small-object single-stream path, fallback without range support; `tests/local.rs`: `open_range` slice/empty/past-EOF; `tests/s3.rs`: `open_range` |
 | B4 S3 backend | `tests/s3.rs` in-memory S3 server: read/range/stat/list/copy (incl. spaces)/delete/404/416; env-gated real endpoint test |
 | B5 routing/timeout/retry | `tests/engine.rs`: routing, timeout, 500→200 retry, 404 no-retry, `max_attempts=0` still attempts once, truncated-body retry |
 | B6 multiplexing | `tests/engine.rs`: in-flight probe (`max_active <= 4`), input order, zero-limit config error, `read_any` first success, zero-length range; `mux` heterogeneous ops, completion order, per-op error isolation |
@@ -25,8 +25,8 @@ Tier: 3 (public API, concurrency, data I/O).
 |---|---|---|
 | Format | `cargo fmt --all -- --check` | exit 0 |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0, zero warnings |
-| Tests | `cargo test --workspace` | 82 passed, 0 failed (io-core 40, files-io 11, net-io 31) |
-| Coverage | `cargo llvm-cov -p io-core --tests --summary-only --fail-under-lines 80` | **84.38% lines**, gate exit 0 |
+| Tests | `cargo test --workspace` | 84 passed, 0 failed (io-core 42, files-io 11, net-io 31) |
+| Coverage | `cargo llvm-cov -p io-core --tests --summary-only --fail-under-lines 80` | **84.51% lines**, gate exit 0 |
 | Mutation | `cargo mutants -p io-core --file crates/io-core/src/uri.rs --file crates/io-core/src/error.rs --timeout 60 --jobs 4` | 20 mutants: 16 caught, 4 unviable, **0 missed** |
 | Supply chain | `cargo audit` | exit 0, zero advisories |
 | Python wheel | `maturin develop --release -m crates/rust-io/Cargo.toml` + `pytest -q` | 11 passed |
@@ -46,25 +46,30 @@ Benchmark (256 × 256 KiB local files plus 64 HTTP requests with 30 ms latency):
 
 ```text
 files=256 bytes=67108864 limit=32
-sequential_ms=7.17
-multiplex_ms=6.76
-speedup=1.06x
-throughput_MiB_s=9460.5
+sequential_ms=9.67
+multiplex_ms=7.71
+speedup=1.25x
+throughput_MiB_s=8301.3
 remote_requests=64 remote_delay_ms=30 limit=8
-remote_sequential_ms=2005.23
-remote_multiplex_ms=252.40
-remote_speedup=7.94x
+remote_sequential_ms=2003.18
+remote_multiplex_ms=251.45
+remote_speedup=7.97x
 parallel_download_bytes=33554432 connections=8
-parallel_download_single_ms=275.22
-parallel_download_8_ms=53.00
-parallel_download_speedup=5.19x
+parallel_download_single_ms=275.98
+parallel_download_8_ms=41.93
+parallel_download_speedup=6.58x
 ```
 
-This is reported honestly: cached local reads are within run-to-run noise (0.67x–1.06x
-across runs), while latency-bound HTTP requests show ~7.9x. The parallel-download phase
+This is reported honestly: cached local reads are within run-to-run noise (0.67x–1.25x
+across runs), while latency-bound HTTP requests show ~8x. The parallel-download phase
 throttles the test server to 1 ms per 256 KiB per connection (modelling per-connection
 bandwidth); without throttling on localhost, extra connections can be slower. Multiplexing
 targets latency/bandwidth-bound transfers; the harness prints every number.
+
+Segmented downloads now stream each range instead of materialising it. Peak RSS for the
+same 32 MiB benchmark fell from 158,244 KiB (0.4.0, range -> `Bytes`) to 116,360 KiB
+(this change, 8 × 64 KiB buffers plus the 32 MiB test body). Memory is O(connections ×
+`IO_CHUNK`), not O(object size), measured with `/usr/bin/time -v` on the release example.
 
 ## Independent review (old-coder verification pass)
 

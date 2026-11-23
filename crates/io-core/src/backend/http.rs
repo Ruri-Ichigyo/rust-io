@@ -4,9 +4,9 @@ use std::time::UNIX_EPOCH;
 use async_trait::async_trait;
 use bytes::{Bytes, BytesMut};
 use futures::StreamExt;
-use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, LAST_MODIFIED, RANGE};
+use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, LAST_MODIFIED, RANGE};
 use reqwest::{Client, StatusCode};
-use tokio::io::AsyncRead;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_util::io::{ReaderStream, StreamReader};
 
 use super::{IoBackend, Metadata};
@@ -174,6 +174,64 @@ impl IoBackend for HttpBackend {
             chunk.map_err(|error| std::io::Error::new(std::io::ErrorKind::ConnectionReset, error))
         });
         Ok(Box::new(StreamReader::new(stream)))
+    }
+
+    async fn open_range(
+        &self,
+        uri: &Uri,
+        offset: u64,
+        length: u64,
+    ) -> IoResult<Box<dyn AsyncRead + Send + Unpin>> {
+        let url = http_uri(uri)?;
+        if length == 0 {
+            return Ok(Box::new(tokio::io::empty()));
+        }
+        let end = offset
+            .checked_add(length - 1)
+            .ok_or_else(|| IoError::InvalidConfig("range overflows u64".into()))?;
+
+        let response = self
+            .client
+            .get(url.clone())
+            .header(RANGE, format!("bytes={offset}-{end}"))
+            .send()
+            .await
+            .map_err(|error| transport_error(uri, error))?;
+        let status = response.status();
+        if status == StatusCode::RANGE_NOT_SATISFIABLE {
+            return Ok(Box::new(tokio::io::empty()));
+        }
+        if status != StatusCode::PARTIAL_CONTENT {
+            if status.is_success() {
+                return Err(IoError::Unsupported(format!(
+                    "{uri}: server ignored the range request"
+                )));
+            }
+            return Err(status_error(uri, status));
+        }
+        if let Some(value) = response
+            .headers()
+            .get(CONTENT_RANGE)
+            .and_then(|value| value.to_str().ok())
+        {
+            let start = value
+                .strip_prefix("bytes ")
+                .and_then(|value| value.split_once('-'))
+                .and_then(|(start, _)| start.parse::<u64>().ok());
+            if start != Some(offset) {
+                return Err(IoError::Http {
+                    status: Some(206),
+                    message: format!(
+                        "{uri}: unexpected Content-Range '{value}' for offset {offset}"
+                    ),
+                });
+            }
+        }
+
+        let stream = response.bytes_stream().map(|chunk| {
+            chunk.map_err(|error| std::io::Error::new(std::io::ErrorKind::ConnectionReset, error))
+        });
+        Ok(Box::new(StreamReader::new(stream).take(length)))
     }
 
     async fn write_from_path(&self, uri: &Uri, path: &Path, len: u64) -> IoResult<()> {
