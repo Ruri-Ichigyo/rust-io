@@ -60,4 +60,9 @@ pub trait IoBackend: Send + Sync {
     async fn delete(&self, uri: &Uri) -> IoResult<()>;
 
     async fn copy(&self, from: &Uri, to: &Uri) -> IoResult<()>;
+
+    /// Whether the backend can serve independent byte ranges concurrently.
+    async fn supports_parallel_ranges(&self, _uri: &Uri) -> IoResult<bool> {
+        Ok(false)
+    }
 }

@@ -375,6 +375,10 @@ impl IoBackend for S3Backend {
             .map_err(|error| s3_error(to, error))?;
         Ok(())
     }
+
+    async fn supports_parallel_ranges(&self, _uri: &Uri) -> IoResult<bool> {
+        Ok(true)
+    }
 }
 
 #[cfg(test)]

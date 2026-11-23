@@ -178,6 +178,10 @@ async def test_io_local_roundtrip_batches_and_streaming(tmp_path):
     assert await io.download(str(target), str(downloaded)) == 10
     assert downloaded.read_bytes() == b"0123456789"
 
+    parallel = tmp_path / "parallel.bin"
+    assert await io.download(str(target), str(parallel), connections=4) == 10
+    assert parallel.read_bytes() == b"0123456789"
+
     upload_source = tmp_path / "upload-source.bin"
     upload_source.write_bytes(b"upload me")
     uploaded = tmp_path / "uploaded.bin"

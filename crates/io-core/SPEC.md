@@ -43,6 +43,8 @@ Evolve `rust-io` from a Lingua Seeker-specific helper into a general-purpose I/O
 - `stat` reports `len`, `is_file`, `is_dir`, `modified` (seconds), and scheme.
 - `list` returns direct child names, directories marked with a trailing `/`.
 - `copy` preserves bytes; `delete` removes a file; deleting a missing file → `NotFound`.
+  Local copy tries a copy-on-write reflink (`FICLONE`) first, then falls back to the
+  kernel copy path (`std::fs::copy`/`copy_file_range`); both remain atomic via temp+rename.
 - Concurrent readers during repeated atomic rewrites always see one complete payload.
 
 ### B3 — HTTP backend
@@ -55,6 +57,9 @@ Evolve `rust-io` from a Lingua Seeker-specific helper into a general-purpose I/O
   `Backend` with the underlying message.
 - `download` streams response chunks to a file without buffering the whole object in memory
   (verified with an object larger than the 64 KiB stream chunk and a peak-buffer probe).
+- `download(..., connections>1)` probes `206 Partial Content`, then fetches independent byte
+  ranges concurrently and writes them with positional writes into a preallocated temp file;
+  servers without range support fall back to the single-stream path.
 - The HTTP backend reuses one `reqwest::Client` per engine instance (connection pooling).
 
 ### B4 — S3 backend
@@ -120,7 +125,8 @@ Async functions (all return awaitables, never block the event loop):
   `(uri, data)` pairs and each result has `ok`, `uri`, `error`
 - `copy_many(pairs, limit=8, timeout_ms=None) -> list[dict]`
 - `read_any(uris, timeout_ms=None) -> dict` with `uri` and `bytes`
-- `download(uri, path, timeout_ms=None) -> int` (bytes written, streaming)
+- `download(uri, path, timeout_ms=None, connections=1) -> int` (streaming; `connections>1`
+  uses parallel ranges when available)
 - `upload(path, uri, timeout_ms=None) -> None` (streaming)
 - `hash(uri, timeout_ms=None) -> str`
 - `hash_many(uris, limit=8) -> list[dict]`

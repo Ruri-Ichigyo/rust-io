@@ -1,6 +1,6 @@
 # EVIDENCE — generic async I/O engine
 
-Source state: commit `520c026` (this file is updated in the following commit).
+Source state: this commit (0.4.0 feature set; see `git log`).
 Spec: [SPEC.md](SPEC.md). Architecture: [ARCHITECTURE.md](ARCHITECTURE.md).
 Spec approval: **not obtained** (autonomous run; old-coder autonomous mode).
 Tier: 3 (public API, concurrency, data I/O).
@@ -10,8 +10,8 @@ Tier: 3 (public API, concurrency, data I/O).
 | Spec | Evidence |
 |---|---|
 | B1 URI model | `src/uri.rs` unit tests: parse/round-trip/case/insensitive/hostile inputs |
-| B2 local backend | `tests/local.rs`: roundtrip, range clamp/NotFound, list/copy/delete, atomic rewrite stress, no temp on failure, permission preservation, long basenames |
-| B3 HTTP backend | `tests/http.rs`: GET/HEAD/Range/PUT, 404/403/500 mapping, streamed upload, ignored-Range fallback, 416 |
+| B2 local backend | `tests/local.rs`: roundtrip, range clamp/NotFound, list/copy/delete (incl. 4 MiB kernel/reflink copy), atomic rewrite stress, no temp on failure, permission preservation, long basenames |
+| B3 HTTP backend | `tests/http.rs`: GET/HEAD/Range/PUT, 404/403/500 mapping, streamed upload, ignored-Range fallback, 416; `tests/engine.rs`: segmented parallel download (probe + 4 ranges) and fallback when ranges are unsupported |
 | B4 S3 backend | `tests/s3.rs` in-memory S3 server: read/range/stat/list/copy (incl. spaces)/delete/404/416; env-gated real endpoint test |
 | B5 routing/timeout/retry | `tests/engine.rs`: routing, timeout, 500→200 retry, 404 no-retry, `max_attempts=0` still attempts once, truncated-body retry |
 | B6 multiplexing | `tests/engine.rs`: in-flight probe (`max_active <= 4`), input order, zero-limit config error, `read_any` first success, zero-length range; `mux` heterogeneous ops, completion order, per-op error isolation |
@@ -25,8 +25,8 @@ Tier: 3 (public API, concurrency, data I/O).
 |---|---|---|
 | Format | `cargo fmt --all -- --check` | exit 0 |
 | Lint | `cargo clippy --workspace --all-targets -- -D warnings` | exit 0, zero warnings |
-| Tests | `cargo test --workspace` | 79 passed, 0 failed (io-core 37, files-io 11, net-io 31) |
-| Coverage | `cargo llvm-cov -p io-core --tests --summary-only --fail-under-lines 80` | **85.19% lines**, gate exit 0 |
+| Tests | `cargo test --workspace` | 82 passed, 0 failed (io-core 40, files-io 11, net-io 31) |
+| Coverage | `cargo llvm-cov -p io-core --tests --summary-only --fail-under-lines 80` | **84.38% lines**, gate exit 0 |
 | Mutation | `cargo mutants -p io-core --file crates/io-core/src/uri.rs --file crates/io-core/src/error.rs --timeout 60 --jobs 4` | 20 mutants: 16 caught, 4 unviable, **0 missed** |
 | Supply chain | `cargo audit` | exit 0, zero advisories |
 | Python wheel | `maturin develop --release -m crates/rust-io/Cargo.toml` + `pytest -q` | 11 passed |
@@ -54,11 +54,17 @@ remote_requests=64 remote_delay_ms=30 limit=8
 remote_sequential_ms=2005.23
 remote_multiplex_ms=252.40
 remote_speedup=7.94x
+parallel_download_bytes=33554432 connections=8
+parallel_download_single_ms=275.22
+parallel_download_8_ms=53.00
+parallel_download_speedup=5.19x
 ```
 
 This is reported honestly: cached local reads are within run-to-run noise (0.67x–1.06x
-across runs), while latency-bound HTTP requests show ~7.9x. Multiplexing targets the
-latter; the harness prints both numbers instead of asserting a win.
+across runs), while latency-bound HTTP requests show ~7.9x. The parallel-download phase
+throttles the test server to 1 ms per 256 KiB per connection (modelling per-connection
+bandwidth); without throttling on localhost, extra connections can be slower. Multiplexing
+targets latency/bandwidth-bound transfers; the harness prints every number.
 
 ## Independent review (old-coder verification pass)
 

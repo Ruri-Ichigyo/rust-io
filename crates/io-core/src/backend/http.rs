@@ -256,4 +256,20 @@ impl IoBackend for HttpBackend {
             "HTTP has no server-side copy; use IoEngine::copy".into(),
         ))
     }
+
+    async fn supports_parallel_ranges(&self, uri: &Uri) -> IoResult<bool> {
+        let url = http_uri(uri)?;
+        let response = self
+            .client
+            .get(url.clone())
+            .header(RANGE, "bytes=0-0")
+            .send()
+            .await
+            .map_err(|error| transport_error(uri, error))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(status_error(uri, status));
+        }
+        Ok(status == StatusCode::PARTIAL_CONTENT)
+    }
 }

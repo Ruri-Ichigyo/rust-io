@@ -41,6 +41,9 @@ async def main():
 
     # Streaming transfer: no whole-object buffering.
     await io.download("https://example.com/paper.pdf", "/tmp/paper.pdf")
+
+    # Large object: probe ranges, then download 8 segments with positional writes.
+    await io.download("https://example.com/big.bin", "/tmp/big.bin", connections=8)
     digest = await io.hash("/tmp/paper.pdf")
 
 asyncio.run(main())
@@ -123,7 +126,7 @@ python -m pytest -q
 
 ## Verification
 
-- 79 Rust tests and 11 Python tests
+- 82 Rust tests and 11 Python tests
 - `io-core` line coverage 85.19%; mutation testing 16 caught, 0 missed
 - `cargo audit` clean
 - Latency-bound multiplex benchmark: 64 requests at 30 ms → 2005 ms sequential vs 252 ms

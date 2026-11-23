@@ -32,6 +32,9 @@ async def main():
 
     # Streamed transfer; the whole object is never buffered in memory.
     await io.download("https://example.com/paper.pdf", "/tmp/paper.pdf")
+
+    # Segmented download: probe 206 range support, then 8 concurrent ranges.
+    await io.download("https://example.com/big.bin", "/tmp/big.bin", connections=8)
     digest = await io.hash("/tmp/paper.pdf")
 
 asyncio.run(main())
@@ -103,7 +106,7 @@ maturin develop --release -m crates/rust-io/Cargo.toml
 
 ## Verification
 
-- 79 Rust tests and 11 Python tests
+- 82 Rust tests and 11 Python tests
 - `io-core` line coverage 85.19%, mutation score 16/16 non-equivalent mutants
 - `cargo audit` clean
 - Multiplex benchmark: 64 HTTP requests at 30 ms latency → 2005 ms sequential vs 252 ms at `limit=8`
